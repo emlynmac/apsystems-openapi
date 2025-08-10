@@ -1,6 +1,6 @@
 # APsystems OpenAPI – Home Assistant Custom Integration
 
-This is a custom [Home Assistant](https://www.home-assistant.io/) integration for pulling **lifetime** and **daily** solar production data from the [APsystems OpenAPI](https://file.apsystemsema.com:8083/apsystems/resource/openapi/Apsystems_OpenAPI_User_Manual_End_User_EN.pdf). It is designed to integrate with the **Energy dashboard** and also provide today's production plus hourly production breakdowns.
+This is a custom [Home Assistant](https://www.home-assistant.io/) integration for pulling **lifetime** and **daily** solar production data from the [APsystems OpenAPI](https://file.apsystemsema.com:8083/apsystems/resource/openapi/Apsystems_OpenAPI_User_Manual_End_User_EN.pdf). It is designed to integrate with the **Energy dashboard** and also provide today's production plus hourly production breakdowns, pulling in data from your APsystems account on their [Energy Monitoring & Analysis (EMA) System](https://www.apsystemsema.com/ema/index.action).
 
 ---
 
@@ -16,6 +16,8 @@ This is a custom [Home Assistant](https://www.home-assistant.io/) integration fo
 ---
 
 ## Installation
+
+0. _Prerequisties:_ Using your account on the [APsystems EMA](https://www.apsystemsema.com/ema/index.action) site, you will need to create an API account as you will need an APP ID, APP Secret, and System ID (SID) for this integration to work. While you can copy the custom code into Home Assistant using the File Editor dashboard, it is much easier if you've installed something like [Studio Code Server](https://github.com/hassio-addons/addon-vscode).
 
 1. Copy the `apsystems_openapi` folder and its contents into:
 
@@ -83,8 +85,10 @@ logger:
 
 After restart, look for log lines like:
 
+```
 APS GET /user/api/v2/systems/summary/XXXX params=None s2s_preview=...
 APS https://api.apsystemsema.com:9282/... → 200 {"code":0,"data":{...}}
+```
 
 ### Recommended cleanup after successful setup
 
