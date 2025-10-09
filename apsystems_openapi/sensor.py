@@ -7,8 +7,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import StateType
+import logging
 
 from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
     store = hass.data[DOMAIN][entry.entry_id]
@@ -63,6 +66,8 @@ class APSLifetimeEnergySensor(APSBaseEntity):
     def extra_state_attributes(self):
         summary = self.coordinator.data.get("summary", {}).get("data", {}) or {}
         hourly = self.coordinator.data.get("hourly", {}) or {}
+        solar_active = self.coordinator.data.get("solar_active", True)
+
         return {
             "today_kwh": _safe_float(summary.get("today")),
             "month_kwh": _safe_float(summary.get("month")),
@@ -70,6 +75,8 @@ class APSLifetimeEnergySensor(APSBaseEntity):
             "hourly_kwh": hourly.get("data"),
             "hourly_date": self.coordinator.data.get("date"),
             "source": "APsystems OpenAPI",
+            "solar_hours_active": solar_active,
+            "status": "Solar hours" if solar_active else "Night hours (cached data)"
         }
 
 class APSTodayEnergySensor(APSBaseEntity):
@@ -89,7 +96,15 @@ class APSTodayEnergySensor(APSBaseEntity):
         if hourly and hourly.get("code") == 0:
             series = hourly.get("data") or []
             try:
-                return round(sum(float(x) for x in series if x is not None), 3)
+                total = round(sum(float(x) for x in series if x is not None), 3)
+                # During night hours, preserve the last known total
+                if not self.coordinator.data.get("solar_active", True) and total == 0:
+                    # Try to get from summary data instead
+                    summary = self.coordinator.data.get("summary", {})
+                    if summary and summary.get("code") == 0:
+                        data = summary.get("data", {})
+                        return _safe_float(data.get("today"))
+                return total
             except (TypeError, ValueError):
                 return None
         return None
@@ -97,9 +112,13 @@ class APSTodayEnergySensor(APSBaseEntity):
     @property
     def extra_state_attributes(self):
         hourly = self.coordinator.data.get("hourly", {}) or {}
+        solar_active = self.coordinator.data.get("solar_active", True)
+
         return {
             "hourly_kwh": hourly.get("data"),
             "hourly_date": self.coordinator.data.get("date"),
+            "solar_hours_active": solar_active,
+            "status": "Solar hours" if solar_active else "Night hours (cached data)"
         }
 
 def _safe_float(v):
