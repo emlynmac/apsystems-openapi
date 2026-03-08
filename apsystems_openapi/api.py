@@ -54,3 +54,14 @@ class APSClient:
             f"/user/api/v2/systems/energy/{self.sid}",
             params={"energy_level": "hourly", "date_range": date_str},
         )
+
+    async def get_inverters(self):
+        """Get list of inverters (ECUs + nested inverter UIDs) for this system."""
+        return await self._get(f"/user/api/v2/systems/inverters/{self.sid}")
+
+    async def get_inverter_energy(self, uid: str, date_str: str, energy_level: str = "hourly"):
+        """Get per-inverter energy/power data (dc_p1, dc_p2, ac_p, time series)."""
+        return await self._get(
+            f"/user/api/v2/systems/{self.sid}/devices/inverter/energy/{uid}",
+            params={"energy_level": energy_level, "date_range": date_str},
+        )
