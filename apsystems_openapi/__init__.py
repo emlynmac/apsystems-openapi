@@ -10,8 +10,10 @@ from homeassistant.util.dt import now, as_local
 from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.helpers.event import async_track_point_in_utc_time
 
-from .const import DOMAIN, PLATFORMS, DEFAULT_BASE_URL
+from .const import DOMAIN, PLATFORMS, DEFAULT_BASE_URL, DEFAULT_INVERTER_SCAN_INTERVAL, INVERTER_LIST_CACHE_SECONDS
 from .api import APSClient
+
+import time as _time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +32,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # Store the last fetched data for use during night hours
     last_data = {"summary": None, "hourly": None, "date": None}
     solar_active = {"is_active": False}
+
+    # Inverter tracking state
+    inverter_cache = {
+        "list": None,                # parsed list of inverter dicts
+        "list_fetched_ts": 0,        # epoch when list was last fetched
+        "energy": {},                # uid -> energy data dict
+        "energy_fetched_ts": 0,      # epoch when energy was last fetched
+        "energy_date": None,
+    }
+    inverter_scan = int(data.get("inverter_scan_interval", DEFAULT_INVERTER_SCAN_INTERVAL))
 
     def update_solar_state():
         """Check if we're currently in solar hours (30 min after sunrise to sunset)."""
@@ -62,36 +74,110 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         """Fetch data from API only during solar hours."""
         try:
             update_solar_state()
+            now_ts = _time.time()
 
-            # Skip API calls during non-solar hours
+            # ── Always discover inverters on first run (even at night) ──
+            if inverter_cache["list"] is None or (
+                now_ts - inverter_cache["list_fetched_ts"] > INVERTER_LIST_CACHE_SECONDS
+            ):
+                try:
+                    inv_resp = await client.get_inverters()
+                    if isinstance(inv_resp, dict) and inv_resp.get("code") == 0:
+                        raw = inv_resp.get("data", [])
+                        parsed = []
+                        for ecu in (raw if isinstance(raw, list) else []):
+                            eid = ecu.get("eid")
+                            for inv in ecu.get("inverter", []):
+                                parsed.append({
+                                    "eid": eid,
+                                    "uid": inv.get("uid"),
+                                    "type": inv.get("type"),
+                                })
+                        inverter_cache["list"] = parsed
+                        inverter_cache["list_fetched_ts"] = now_ts
+                        _LOGGER.info("Discovered %d inverter(s)", len(parsed))
+                    else:
+                        _LOGGER.warning("Inverter list API error: %s", inv_resp)
+                        if inverter_cache["list"] is None:
+                            inverter_cache["list"] = []
+                except Exception as exc:
+                    _LOGGER.warning("Error fetching inverter list: %s", exc)
+                    if inverter_cache["list"] is None:
+                        inverter_cache["list"] = []
+
+            # ── Night-time path: return cached data ──
             if not solar_active["is_active"]:
                 _LOGGER.debug("Outside solar hours, returning cached data")
                 if last_data["summary"]:
-                    return last_data
-                # Return minimal data if no cache available
+                    cached = dict(last_data)
+                    cached["solar_active"] = False
+                    cached.setdefault("inverters", inverter_cache["list"] or [])
+                    cached.setdefault("inverter_energy", inverter_cache["energy"])
+                    cached.setdefault("inverter_energy_date", inverter_cache["energy_date"])
+                    return cached
                 return {
                     "summary": {"code": 0, "data": {"lifetime": 0, "today": 0, "month": 0, "year": 0}},
                     "hourly": {"code": 0, "data": []},
                     "date": as_local(now()).date().isoformat(),
-                    "solar_active": False
+                    "solar_active": False,
+                    "inverters": inverter_cache["list"] or [],
+                    "inverter_energy": inverter_cache["energy"],
+                    "inverter_energy_date": inverter_cache["energy_date"],
                 }
 
-            # 1) lifetime/today/month/year
+            # ── Solar-hours: fetch system data (existing) ──
             summary = await client.get_system_summary()
             if summary.get("code") != 0:
                 raise UpdateFailed(f"APsystems summary error: {summary}")
 
-            # 2) today's hourly series
             date_str = as_local(now()).date().isoformat()
             hourly = await client.get_system_energy_hourly(date_str)
             if hourly.get("code") != 0:
                 _LOGGER.warning("APsystems hourly error: %s", hourly)
-                hourly = {"code": 0, "data": []}  # degrade gracefully
+                hourly = {"code": 0, "data": []}
 
-            # Update last_data cache
             result = {"summary": summary, "hourly": hourly, "date": date_str, "solar_active": True}
-            last_data.update(result)
 
+            # ── Inverter energy: fetch on slower schedule ──
+            if now_ts - inverter_cache["energy_fetched_ts"] >= inverter_scan:
+                inv_energy = {}
+                for inv in (inverter_cache["list"] or []):
+                    uid = inv["uid"]
+                    try:
+                        resp = await client.get_inverter_energy(uid, date_str)
+                        if isinstance(resp, dict) and resp.get("code") == 0:
+                            inv_energy[uid] = resp.get("data", {})
+                        else:
+                            _LOGGER.warning("Inverter energy error for %s: %s", uid, resp)
+                    except Exception as exc:
+                        _LOGGER.warning("Failed to fetch energy for inverter %s: %s", uid, exc)
+                inverter_cache["energy"] = inv_energy
+                inverter_cache["energy_fetched_ts"] = now_ts
+                inverter_cache["energy_date"] = date_str
+
+                # Log budget estimate
+                n_inv = len(inverter_cache["list"] or [])
+                solar_h = 11  # rough average
+                sys_calls = (solar_h * 3600 / scan_interval) * 2
+                inv_calls = (solar_h * 3600 / inverter_scan) * n_inv
+                est_monthly = int((sys_calls + inv_calls + 1) * 30)
+                _LOGGER.info(
+                    "Estimated monthly API calls: ~%d/1000 "
+                    "(%d inverters, system every %ds, inverters every %ds)",
+                    est_monthly, n_inv, scan_interval, inverter_scan,
+                )
+                if est_monthly > 900:
+                    _LOGGER.warning(
+                        "API budget estimate (%d/mo) is close to/exceeds the 1000/mo limit! "
+                        "Consider increasing inverter_scan_interval.",
+                        est_monthly,
+                    )
+
+            result["inverters"] = inverter_cache["list"] or []
+            result["inverter_energy"] = inverter_cache["energy"]
+            result["inverter_energy_date"] = inverter_cache["energy_date"]
+
+            last_data.update(result)
             return result
         except Exception as e:
             raise UpdateFailed(str(e)) from e

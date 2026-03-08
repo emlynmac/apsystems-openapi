@@ -15,6 +15,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Optional("scan_interval", default=6000): vol.All(int, vol.Range(min=1800, max=7200)),  # 30 min to 2 hours
     vol.Optional("sunrise_offset", default=30): vol.All(int, vol.Range(min=0, max=120)),  # minutes after sunrise
     vol.Optional("sunset_offset", default=30): vol.All(int, vol.Range(min=0, max=120)),  # minutes after sunset
+    vol.Optional("inverter_scan_interval", default=14400): vol.All(
+        int, vol.Range(min=3600, max=86400)
+    ),  # 1 hour to 24 hours
 })
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
