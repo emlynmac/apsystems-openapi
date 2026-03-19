@@ -166,7 +166,7 @@ class APSInverterPowerSensor(APSBaseEntity):
         self._inv_type = inverter_info.get("type", "Unknown")
         self._eid = inverter_info.get("eid", "")
         super().__init__(coordinator, sid, f"inverter_{self._uid}_power")
-        self._attr_name = f"Inverter {self._uid} Power"
+        self._attr_name = "Power"
 
     @property
     def device_info(self):
@@ -248,7 +248,7 @@ class _APSInverterFieldSensor(APSBaseEntity):
         self._inv_type = inverter_info.get("type", "Unknown")
         self._eid = inverter_info.get("eid", "")
         super().__init__(coordinator, sid, f"inverter_{self._uid}_{suffix}")
-        self._attr_name = f"Inverter {self._uid} {name}"
+        self._attr_name = name
 
     @property
     def device_info(self):
