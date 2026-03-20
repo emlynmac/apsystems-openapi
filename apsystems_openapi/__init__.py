@@ -132,8 +132,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                     cached.setdefault("inverter_energy_date", inverter_cache["energy_date"])
                     return cached
                 return {
-                    "summary": {"code": 0, "data": {"lifetime": 0, "today": 0, "month": 0, "year": 0}},
-                    "hourly": {"code": 0, "data": []},
+                    "summary": None,
+                    "hourly": None,
                     "date": as_local(now()).date().isoformat(),
                     "solar_active": False,
                     "inverters": inverter_cache["list"] or [],

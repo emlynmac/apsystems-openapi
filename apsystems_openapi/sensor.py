@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import date as dt_date, datetime as dt_datetime
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.components.sensor.const import SensorStateClass
 from homeassistant.const import (
@@ -12,8 +13,10 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import StateType
+from homeassistant.util.dt import now as dt_now
 import logging
 
 from .const import DOMAIN
@@ -62,7 +65,7 @@ class APSBaseEntity(CoordinatorEntity, SensorEntity):
             "name": f"APsystems {self._sid}",
         }
 
-class APSLifetimeEnergySensor(APSBaseEntity):
+class APSLifetimeEnergySensor(APSBaseEntity, RestoreEntity):
     """Monotonic lifetime kWh for Energy dashboard."""
 
     _attr_name = "Total Energy"
@@ -72,6 +75,18 @@ class APSLifetimeEnergySensor(APSBaseEntity):
 
     def __init__(self, coordinator, sid: str):
         super().__init__(coordinator, sid, "total_energy")
+        self._last_valid_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known value on HA restart."""
+        await super().async_added_to_hass()
+        if (last_state := await self.async_get_last_state()) is not None:
+            try:
+                val = float(last_state.state)
+                if val > 0:
+                    self._last_valid_value = val
+            except (TypeError, ValueError):
+                pass
 
     @property
     def native_value(self) -> StateType:
@@ -79,10 +94,13 @@ class APSLifetimeEnergySensor(APSBaseEntity):
         if summary and summary.get("code") == 0:
             data = summary.get("data", {})
             try:
-                return float(data.get("lifetime"))
+                val = float(data.get("lifetime"))
+                if val > 0:
+                    self._last_valid_value = val
+                    return val
             except (TypeError, ValueError):
-                return None
-        return None
+                pass
+        return self._last_valid_value
 
     @property
     def extra_state_attributes(self):
@@ -101,8 +119,8 @@ class APSLifetimeEnergySensor(APSBaseEntity):
             "status": "Solar hours" if solar_active else "Night hours (cached data)"
         }
 
-class APSTodayEnergySensor(APSBaseEntity):
-    """Non-monotonic daily energy (kWh); resets each day."""
+class APSTodayEnergySensor(APSBaseEntity, RestoreEntity):
+    """Non-monotonic daily energy (kWh); resets each day at midnight."""
 
     _attr_name = "Today Energy"
     _attr_device_class = SensorDeviceClass.ENERGY
@@ -111,25 +129,62 @@ class APSTodayEnergySensor(APSBaseEntity):
 
     def __init__(self, coordinator, sid: str):
         super().__init__(coordinator, sid, "today_energy")
+        self._last_valid_value: float | None = None
+        self._last_date: str | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known value on HA restart."""
+        await super().async_added_to_hass()
+        if (last_state := await self.async_get_last_state()) is not None:
+            try:
+                self._last_valid_value = float(last_state.state)
+            except (TypeError, ValueError):
+                pass
+            if last_state.attributes:
+                self._last_date = last_state.attributes.get("hourly_date")
+
+    @property
+    def last_reset(self) -> dt_datetime | None:
+        """Return start of today as the last reset point."""
+        local = dt_now()
+        return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
     @property
     def native_value(self) -> StateType:
+        today = dt_now().date().isoformat()
+
+        # Reset at midnight when the real date moves past our cached date
+        if self._last_date and self._last_date != today:
+            self._last_valid_value = 0.0
+            self._last_date = today
+
+        # Try to compute from hourly data
         hourly = self.coordinator.data.get("hourly", {})
         if hourly and hourly.get("code") == 0:
             series = hourly.get("data") or []
             try:
                 total = round(sum(float(x) for x in series if x is not None), 3)
-                # During night hours, preserve the last known total
-                if not self.coordinator.data.get("solar_active", True) and total == 0:
-                    # Try to get from summary data instead
-                    summary = self.coordinator.data.get("summary", {})
-                    if summary and summary.get("code") == 0:
-                        data = summary.get("data", {})
-                        return _safe_float(data.get("today"))
-                return total
+                if total > 0:
+                    self._last_valid_value = total
+                    self._last_date = today
+                    return total
             except (TypeError, ValueError):
-                return None
-        return None
+                pass
+
+        # Fallback to summary "today" field
+        summary = self.coordinator.data.get("summary", {})
+        if summary and summary.get("code") == 0:
+            data = summary.get("data", {})
+            today_val = _safe_float(data.get("today"))
+            if today_val is not None and today_val > 0:
+                self._last_valid_value = today_val
+                self._last_date = today
+                return today_val
+
+        # Return cached value (persists through night until midnight)
+        if self._last_date is None:
+            self._last_date = today
+        return self._last_valid_value if self._last_valid_value is not None else 0.0
 
     @property
     def extra_state_attributes(self):
@@ -138,7 +193,7 @@ class APSTodayEnergySensor(APSBaseEntity):
 
         return {
             "hourly_kwh": hourly.get("data"),
-            "hourly_date": self.coordinator.data.get("date"),
+            "hourly_date": self._last_date or self.coordinator.data.get("date"),
             "solar_hours_active": solar_active,
             "status": "Solar hours" if solar_active else "Night hours (cached data)"
         }
