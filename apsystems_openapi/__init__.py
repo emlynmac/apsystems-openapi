@@ -117,6 +117,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 resp = await client.get_inverter_energy(uid, date_str, energy_level="minutely")
                 if isinstance(resp, dict) and resp.get("code") == 0:
                     inv_energy[uid] = resp.get("data", {})
+                elif isinstance(resp, dict) and resp.get("code") == 1001:
+                    _LOGGER.debug("No energy data yet for inverter %s (code 1001)", uid)
                 else:
                     _LOGGER.warning("Inverter energy error for %s: %s", uid, resp)
             except Exception as exc:
@@ -235,10 +237,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         except Exception as e:
             raise UpdateFailed(str(e)) from e
 
-    # Use a 30 minute interval to stay under API limits
-    # Note summer: ~13.75 hours * 2 queries/hour * 30 = 825 queries/month
-    # Switched to 60 minutes
-    scan_interval = int(data.get("scan_interval", 3600))  # Default 60 minutes
+    # Default 30-minute interval (~960 API calls/month with 6 inverters)
+    scan_interval = int(data.get("scan_interval", 1800))  # Default 30 minutes
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
@@ -291,10 +291,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         async_track_point_in_utc_time(hass, _run_batch, target)
         _LOGGER.info("Scheduled batch power fetch at %s", target)
 
+    # Schedule midnight coordinator refresh to reset daily sensors
+    async def schedule_midnight_refresh(now_time):
+        """Schedule a coordinator refresh at midnight to reset daily sensors."""
+        local_now = as_local(now())
+        target = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        async def _run_midnight(event):
+            _LOGGER.info("Midnight refresh: resetting daily sensor data")
+            await coordinator.async_request_refresh()
+            await schedule_midnight_refresh(now())
+        async_track_point_in_utc_time(hass, _run_midnight, target)
+        _LOGGER.info("Scheduled midnight refresh at %s", target)
+
     # Schedule the initial sun events
     await schedule_sunrise_update(now())
     await schedule_sunset_update(now())
     await schedule_batch_power(now())
+    await schedule_midnight_refresh(now())
 
     # Store everything needed for sensors and button
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {

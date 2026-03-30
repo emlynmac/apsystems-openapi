@@ -158,28 +158,31 @@ class APSTodayEnergySensor(APSBaseEntity, RestoreEntity):
             self._last_valid_value = 0.0
             self._last_date = today
 
-        # Try to compute from hourly data
-        hourly = self.coordinator.data.get("hourly", {})
-        if hourly and hourly.get("code") == 0:
-            series = hourly.get("data") or []
-            try:
-                total = round(sum(float(x) for x in series if x is not None), 3)
-                if total > 0:
-                    self._last_valid_value = total
-                    self._last_date = today
-                    return total
-            except (TypeError, ValueError):
-                pass
+        # Only use coordinator data if it's from today
+        data_date = self.coordinator.data.get("date")
+        if data_date == today:
+            # Try to compute from hourly data
+            hourly = self.coordinator.data.get("hourly", {})
+            if hourly and hourly.get("code") == 0:
+                series = hourly.get("data") or []
+                try:
+                    total = round(sum(float(x) for x in series if x is not None), 3)
+                    if total > 0:
+                        self._last_valid_value = total
+                        self._last_date = today
+                        return total
+                except (TypeError, ValueError):
+                    pass
 
-        # Fallback to summary "today" field
-        summary = self.coordinator.data.get("summary", {})
-        if summary and summary.get("code") == 0:
-            data = summary.get("data", {})
-            today_val = _safe_float(data.get("today"))
-            if today_val is not None and today_val > 0:
-                self._last_valid_value = today_val
-                self._last_date = today
-                return today_val
+            # Fallback to summary "today" field
+            summary = self.coordinator.data.get("summary", {})
+            if summary and summary.get("code") == 0:
+                data = summary.get("data", {})
+                today_val = _safe_float(data.get("today"))
+                if today_val is not None and today_val > 0:
+                    self._last_valid_value = today_val
+                    self._last_date = today
+                    return today_val
 
         # Return cached value (persists through night until midnight)
         if self._last_date is None:
